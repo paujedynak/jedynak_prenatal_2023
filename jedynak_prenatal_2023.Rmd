@@ -1,0 +1,1854 @@
+---
+title: "Prenatal exposure to triclosan assessed in multiple urine samples and placental DNA methylation"
+author: "Paulina Jedynak, Lucile Broséus, Jörg Tost, Florence Busato, Stephan Gabet, Cathrine Thomsen, Amrit K. Sakhi, Isabelle Pin, Rémy Slama, Johanna Lepeule, Claire Philippat"
+date: "2023"
+output:
+  html_document:
+    df_print: paged
+biblio-style: apsr
+fontfamily: mathpazo
+fontsize: 11pt
+geometry: margin = 1in
+keywords: Epigenetics; Imprinted genes; Placenta; DNA methylation; Pooled urine samples; Triclosan; Infinium Methylation EPIC
+abstract: "A previous study reported positive associations of maternal urinary concentrations of triclosan, a synthetic phenol with widespread exposure in the general population, with placental DNA methylation of male fetuses. Given the high number of comparisons performed in -omic research, further studies were needed to validate and extend on these findings. Using a cohort of male and female fetuses with repeated maternal urine samples to assess exposure, we studied the associations between triclosan and placental DNA methylation. We assessed triclosan concentrations in two pools of 21 urine samples collected among 395 women from the SEPAGES cohort. We used Infinium Methylation EPIC arrays to measure DNA methylation in placental biopsies collected at delivery. We performed a candidate study restricted to a set of candidate CpGs (n = 500) identified in a previous work as well as an exploratory epigenome-wide association study to investigate the associations between triclosan and differentially methylated probes and regions. Analyses were conducted on the whole population and stratified by child’s sex. Mediation analysis was performed to test whether heterogeneity of placental tissue may mediate the observed associations. In the candidate approach, we confirmed 18 triclosan-associated genes when both sexes were considered. After stratification for child’s sex, triclosan was associated with 72 genes in females and three in males. Most of the associations were positive and several CpGs mapped to imprinted genes: FBRSL1, KCNQ1, RHOBTB3, and SMOC1. A mediation effect by placental tissue heterogeneity was identified for most of the observed associations. In the exploratory analysis, we identified a few isolated associations in the sex-stratified analysis. In line with a previous study on male placentas, our approach revealed several positive associations between triclosan exposure and placental DNA methylation. Several identified loci mapped to imprinted genes."
+---
+
+## **General setup**
+
+```{r setup, echo = TRUE, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, include = TRUE, message = FALSE, warning = FALSE)
+```
+
+
+## **Load packages**
+
+```{r}
+# To create a local (project-specific) copy of the packages that were used to perform the following analyses use the renv package manager
+renv::restore()
+```
+
+```{r}
+# Load packages
+pacman::p_load(bacon,
+               ccmm,
+               DescriptiveStatistics,
+               DMR,
+               ggpubr,
+               ggrepel,
+               Helpers,
+               here, 
+               Hmisc, 
+               janitor,
+               magrittr, 
+               IlluminaHumanMethylationEPICanno.ilm10b4.hg19, 
+               matrixStats,
+               Plots,
+               rio,
+               robCompositions,
+               RobustRegressions,
+               scales,
+               stats,
+               tidyverse)
+```
+
+
+```{r}
+# Load functions
+source(here("R/PrepareDatasetsSepages.R"))
+source(here("R/PreprocessMethDataSepages.R"))
+source(here("R/ExposureCharacteristicsSepages.R"))
+source(here("R/MediationAnalysisSepages.R"))
+source(here("R/Figures.R"))
+```
+
+
+
+## **Load datasets**
+
+Note: re-running the analyses requires an additional data/raw_data folder not shared here, containing the different data sets presented hereafter. These data can only be provided upon request.
+
+```{r}
+# Load datasets
+# Data on covariates (n = 484)
+covariate_data <- import(here("data/raw_data/data_sepages_211022.sas7bdat"))
+
+# Data on phenol exposure (n = 479)
+exposure_data <- import(here("data/raw_data/phenols_phthalates_pregnancy_mr_2020-03-26_448.csv")) # sent by Claire Philippat 26/02/2021
+
+# Methylation data (n = 395, no replicates, 814,481 CpGs, not filtered)
+meth_N395 <- import(here("data/raw_data/bmiq_processed.RDS")) %>%
+  t()
+
+# Dataset containing DNA methylation measurement technical factors (batch, plate, chip) info, n = 395, sent by Lucile Broseus 02/11/2021
+tech_conf <- import(here("data/raw_data/SEPAGES_SampleSheet_nodup_20211208.csv"))
+
+# Placental cell mix proportions sent by Lucile Broseus 07/02/2022
+SEPAGES_CC_planet_rpc <- import(here("data/raw_data/SEPAGES_CC.planet_rpc.csv")) %>% 
+  mutate(id = as.character(id))
+
+# Data on number of urine samples per pool
+data_nsample <- import(here("data/raw_data/data_nsample_230314.Rdata"))
+
+# EWAS results for EDEN study (Jedynak et al. 2021)
+EWAS_EDEN <- import("data/EWAS_rep_nl_FDR.RDS")
+
+# List of genes identified as differentially methylated in association with triclosan in the DMR analyses (Appendix Table 4 from Jedynak et al. 2021)
+genes_DMR_2probes <- import(here("data/genes_DMR_2probes.csv"))
+
+# List of imprinted genes (same as in Jedynak et al. 2021)
+imprinted_genes <- import(here("data/201028_imprinted_genes_list_cp200514_corrected.csv"))  %>%
+  arrange(gene_symbol) # in this study, only 297 of these genes are represented (in the total of 20,283 Illumina genes available for the study)
+
+# List of updated gene names (to avoid inconsistency between Illumina and Entrez naming) that were identified as associated with phenol exposure
+updated_gene_names <- import(here("data/updated_gene_names.csv"))
+```
+
+
+## **Prepare variable lists**
+
+Manually create lists of compounds, models variables, etc.
+
+```{r}
+# Original names for exposure concentrations standardized acc. to Mortamais et al. 2012
+tcs_exposure <- c("mo_TRCS_total_i_cor_t2", "mo_TRCS_total_i_cor_t3")
+
+# List of confounders used as adjustment factors in the main statistical analyses
+confounders <- c("season_conc", 
+                 "mother_act_smoke", 
+                 "parity", 
+                 "mother_edu", 
+                 "mother_bmi", 
+                 "child_sex", 
+                 "mother_age",
+                 "gest_age")
+
+# List of technical confounders for the EWAS and DMR study
+tech_conf_EWAS_DMR <- c("batch", "plate", "chip")
+
+# List cell types obtained by planet package, to be added to the models in the sensitivity analyses. Since cell types sum up to 1, one needs to be removed to avoid singularity. Remove nRBC type as least represented 
+cell_mix <- c("Endothelial", "Hofbauer", "Stromal", "Syncytiotrophoblast", "Trophoblasts")
+```
+
+
+=================================
+
+
+## **Data preparation**
+
+Before further analyses, original datasets need to be pre-processed: variables of interest need to be selected, some variables need to be renamed and recoded, missing values imputed, datasets merged etc. For methylation data, unspecific probes, outliers and CpGs with number of NAs exceeding 25% need to be removed.
+
+### DNA methylation for individual loci
+
+```{r}
+# Remove outliers and CpGs with number of NAs exceeding 25% for the subsample (n = 395)
+
+# Divide the dataset in parts so it can be processed faster
+n <- 3
+nc <- ncol(meth_N395)
+splitted_meth <- lapply(split(colnames(meth_N395), rep(c(1:n), each = nc / n)), function(x) meth_N395[, x])
+rm(meth_N395)
+
+meth_clean <- NULL
+
+for (meth in splitted_meth) {
+  
+  meth_clean_part <- PrepareMethylationData(meth_data = meth)
+  meth_clean <- cbind(meth_clean, meth_clean_part)
+}
+
+# ~0.4% of the values in the dataset (n = 395) were outliers (1,056,397 data points). 0 CpGs were removed as none contained >25% of missing values. Final matrix dimensions: 395 x 752,577
+```
+
+```{r}
+# Calculate mean methylation for each CpG in the sample
+mean_meth <- data.frame(Mean_meth = colMeans(meth_clean, na.rm = TRUE),
+                        SD_meth = colSds(meth_clean, na.rm = TRUE)) %>%
+  rownames_to_column("CpG")
+```
+
+```{r}
+# Restrict the methylation data to CpGs overlapping between the two studies
+meth_clean_restr <- meth_clean[, colnames(meth_clean) %in% EWAS_EDEN$CpG] # 395 x 337,722
+```
+
+
+### Exposures, covariates, technical factors
+
+```{r}
+# Number of samples per pool
+n_samples <- data_nsample %>% 
+  rowwise() %>%
+  mutate(id = as.character(ident),
+         sum_n_sample = sum(mo_n_sample_T1, mo_n_sample_T3, na.rm = TRUE)) %>% 
+  dplyr::select(-cy1hao1_q03)
+
+# Restrict covariates data to methylation IDs
+confounder_data_restr <- covariate_data[covariate_data$ident %in% rownames(meth_clean), ]
+
+expo_cov_tech_conf_miss <- PrepareDatasetsSepages(
+  covariate_data = confounder_data_restr,
+  technical_covariates_data = tech_conf,
+  exposure_data = exposure_data,
+  exposures = c(tcs_exposure, "mo_urine_sample_date_t2", "mo_urine_sample_date_t3"))
+
+# Add number of samples per trimester
+expo_cov_tech_conf_miss <- expo_cov_tech_conf_miss %>% 
+  merge(n_samples, by = "id")
+```
+
+
+=================================
+
+
+## **Population characteristics**
+
+Population characteristics for the mother-child pairs included in the study
+
+```{r}
+PopulationCharacteristics(
+  input_data = expo_cov_tech_conf_miss,
+  variable_list = confounders,
+  path = "results",
+  file_name = "population_charactersitics")
+```
+
+
+Number of urine samples per trimester
+
+```{r}
+n_pools_T1 <- as.data.frame(table(expo_cov_tech_conf_miss$mo_n_sample_T1))
+n_pools_T3 <- as.data.frame(table(expo_cov_tech_conf_miss$mo_n_sample_T3))
+
+n_pools <- full_join(n_pools_T1, n_pools_T3, by = "Var1") %>% 
+  mutate(n_samples = as.integer(levels(Var1)), 
+         T1 = Freq.x,
+         T3 = Freq.y,
+         .keep = "unused") %>% 
+  arrange(n_samples) %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  row_to_names(row_number = 1) %>% 
+  replace(is.na(.), 0)
+```
+
+
+=================================
+
+
+## **Impute missing covariates**
+
+```{r}
+expo_cov_tech_conf <- ImputeMissingCov(data_w_missing = expo_cov_tech_conf_miss)
+
+# Add cellmix to the imputed dataset
+expo_cov_tech_conf_cellmix <- expo_cov_tech_conf %>% 
+  
+  # Add placental cell mix to confounders
+  left_join(SEPAGES_CC_planet_rpc, by = "id")
+```
+
+=================================
+
+
+## **Exposure descriptive statistics**
+
+Maternal exposure descriptive statistics for triclosan in the subsample (n = 395)
+
+```{r}
+exposure_char_sex <- data.frame()
+
+for (sex in c("Female", "Male")) {
+  
+  exposure_char <- ExposureCharacteristicsSepages(
+    input_data = filter(expo_cov_tech_conf_miss, child_sex == sex),
+    lod_values = 0.04,
+    path = "results",
+    file_name = str_c("exposure_char_", sex)) %>% 
+    mutate(child_sex = sex, .before = "LOD")
+  
+  exposure_char_sex <- bind_rows(exposure_char_sex, exposure_char)
+}
+
+exposure_char_both <- ExposureCharacteristicsSepages(
+  input_data = expo_cov_tech_conf_miss,
+  lod_values = 0.04,
+  path = "results",
+  file_name = "exposure_char_both") %>% 
+  mutate(child_sex = "Both_sexes", .before = "LOD")
+
+exposure_char <- bind_rows(exposure_char_sex, exposure_char_both)
+```
+
+
+=================================
+
+
+## **1. Concept-driven approach**
+
+Only CpGs overlapping between EDEN and SEPAGES would be considered. On these CpGs, an EWAS would be performed (p-value for an interaction term with sex will be also presented); Then, based on EWAS results, a DMR analysis will be run however, since it is a hypothesis-driven study, p-value for starting a DMR would be increased from 0.001 to 0.05. In this approach, a comparison would be made to check if any DMRs overlap between EDEN and SEPAGES. If it is not the case and some new DMRs appear, they would not be considered as a result of interest and will be discarded. 
+
+
+
+### 1.1. Candidate CpGs
+
+### 1.1.1. Both sexes: analysis (unadjusted for cellmix) on the triclosan-associated CpGs overlapping between the previous study of Jedynak et al. and the current study (500 CpGs)
+
+```{r}
+# Run robust linear regressions and annotate the results
+EWAS_overlapping <-
+  SpecificLociMethylationRegressions(
+    meth_data = meth_clean_restr,
+    expo_cov = expo_cov_tech_conf,
+    exposures = "TCS_log2",
+    confounders = confounders,
+    technical_confounders = tech_conf_EWAS_DMR,
+    maxit = 400,
+    annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+    expo_labels = "Triclosan",
+    path = "results",
+    file_name = "EWAS_overlapping")
+```
+
+
+Restrict results to CpGs identified for EDEN as associated with TCS
+
+```{r}
+# Prepare SPEAGES dataset for merging
+EWAS_overlap <- EWAS_overlapping %>%
+  select(CpG, Estimate, Estimate_CI, raw_p_value, p_value_FDR) %>%
+  rename_at(vars(-CpG), function(x) x = paste0(x, "_SEPAGES"))
+
+# Merge SEPAGES and EDEN datasets for comparison
+combined_EDEN_SEPAGES <- EWAS_EDEN %>%
+  filter(Exposure == "TCS_log2") %>%
+  ungroup() %>%
+  select(CpG, Chr, Position, Gene, Estimate, Estimate_CI, raw_p_value, p_value_FDR, everything()) %>%
+  merge(EWAS_overlap, by = "CpG") %>%
+  arrange(Gene)
+
+# Select CpGs common between EDEN and SEPAGES
+EWAS_EDEN_SEPAGES <- combined_EDEN_SEPAGES %>%
+  filter(p_value_FDR < 0.05) # 500 CpGs
+```
+
+
+```{r}
+# List CpGs with uncorrected p-value <0.05 in SEPAGES
+sign_CpGs_SEPAGES <- EWAS_EDEN_SEPAGES %>% 
+  filter(raw_p_value_SEPAGES < 0.05)
+dim(sign_CpGs_SEPAGES)[1] # 20 CpGs
+
+genes_both <- CpGsInGenes(sign_CpGs_SEPAGES, "Gene")
+
+# Number of positive associations in both datasets
+length(which(sign_CpGs_SEPAGES$Estimate > 0)) # 18 CpGs
+
+# Number of negative associations in both datasets
+length(which(sign_CpGs_SEPAGES$Estimate < 0)) # 2 CpGs
+```
+
+Identified CpGs mapped to 18 genes and 2 intergenic regions. All the genes are protein coding.
+
+
+Determine if there are any imprinted genes in any of the results. Out of 304 genes identified as imprinted, in my study only 295 are represented which is 1.5% genes covered by Illumina (19,376 genes).
+
+```{r}
+# Calculate the ratio of imprinted genes in the results
+# Calculate n of genes resulting from DMR analysis (sample size)
+imprinted_genes_CpGs <- CpGsInGenes(data = sign_CpGs_SEPAGES, var_to_distinct = "Gene") %>%
+  select(Gene) %>%
+  
+  # Add gene symbol (based on Entrez numbers) to the results
+  merge(updated_gene_names, by = "Gene")
+
+n_genes_sample <- nrow(imprinted_genes_CpGs) # 18 unique genes
+
+
+# Calculate n of imprinted genes in the DMR result (success in sample)
+n_imp_genes_sample <- imprinted_genes_in_DMRs %>%
+  filter(Gene %in% imprinted_genes$Gene_id) %>%
+  nrow() # 2 imprinted genes
+
+# Calculate total n of genes in the whole assay (population size). This calculation takes time
+unique_genes <- EWAS_overlapping %>%
+  select(Gene) %>%
+  CpGsInGenes(var_to_distinct = "Gene") # There are 19,376 known genes in my Illumina assay
+
+# To save time the following line can be replaced by n_genes_total <- 19376
+n_genes_total <- nrow(unique_genes)
+
+# Calculate n of imprinted genes in the whole assay (success in population)
+imp_genes_present <- filter(unique_genes, Gene %in% imprinted_genes$Gene_id) # Only 295 out of 304 imprinted genes are present
+
+# To save time the following line can be replaced by n_imp_genes_total <- 295
+n_imp_genes_total <- nrow(imp_genes_present)
+```
+
+Two genes (RHOBTB3 and SMOC1) are imprinted.
+
+
+### 1.1.2. Both sexes: mediation analysis
+
+We would like to know if the effect of triclosan exposure on DNA methylation is mediated by the cell mix (restricted to CpGs for which the % difference between beta estimates was >= 20%).
+
+```{r}
+# Run robust linear regressions adjusted for cellmix and annotate the results
+EWAS_cellmix <-
+  SpecificLociMethylationRegressions(
+    meth_data = meth_clean_restr,
+    expo_cov = expo_cov_tech_conf_cellmix,
+    exposures = "TCS_log2",
+    confounders = confounders,
+    technical_confounders = c(tech_conf_EWAS_DMR, cell_mix),
+    maxit = 400,
+    annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+    expo_labels = "Triclosan",
+    path = "results",
+    file_name = "EWAS_cellmix")
+```
+
+```{r}
+EWAS_cellmix <- EWAS_cellmix %>%   
+  select(CpG, Estimate, Estimate_CI, raw_p_value) %>%
+  arrange(CpG) %>% 
+  rename_all(function(x) paste(x, "cellmix", sep = "_"))
+
+EWAS_combined_cellmix <- EWAS_EDEN_SEPAGES %>% 
+  
+  # Add information on mean and SD of methylation level 
+  merge(mean_meth, by = "CpG") %>%
+  arrange(CpG) %>% 
+  select(CpG:Gene, 
+         Location_of_CpG, 
+         Location_in_gene, 
+         Mean_meth, 
+         SD_meth, 
+         Estimate_SEPAGES,
+         Estimate_CI_SEPAGES, 
+         raw_p_value_SEPAGES,
+         Estimate, 
+         Estimate_CI, 
+         raw_p_value,
+         p_value_FDR) %>% 
+  
+  # Merge with sensitivity EWAS adjusted for cellmix
+  cbind(EWAS_cellmix) %>% 
+  
+  # Calculate the absolute difference in the estimates of main and sensitivity analyses
+  mutate(perc_diff_main_cellmix = round((Estimate_SEPAGES - Estimate_cellmix) * 100 / Estimate_SEPAGES, 1))
+```
+
+```{r}
+# Extract significant results for TCS with beta difference greater equal 20 percent
+EWAS_indx_TCS <- EWAS_combined_cellmix %>% 
+  filter(raw_p_value_SEPAGES < 0.05 & perc_diff_main_cellmix >= 20) %>% # 18 differentially methylated CpGs with beta difference >= 20%
+  pull(CpG)
+```
+
+```{r}
+# Create a dataset with the variables of interest that will be used in the mediation analysis
+expo_cov_sel <- expo_cov_tech_conf_cellmix %>% 
+  select(id, TCS_log2, all_of(confounders), all_of(tech_conf_EWAS_DMR), all_of(cell_mix))
+```
+
+```{r}
+# Create a composite variable for cell types using PCA
+# Run PCA on cell types to make a 'representative' of the 5 cell types
+pca_cells <- expo_cov_tech_conf_cellmix %>% 
+  select(Endothelial:Trophoblasts) %>% 
+  prcomp(center = TRUE, scale = TRUE, retx = TRUE)
+
+summary(pca_cells) # 52% of variance explained by PC1
+
+# Add PC1 to the dataset
+expo_cov_sel$pc1 <- pca_cells$x[, 1]
+```
+
+
+```{r}
+# Restrict the original methylation dataset to CpGs differentially methylated for TCS
+meth_TCS <- meth_clean[, colnames(meth_clean) %in% EWAS_indx_TCS]
+```
+
+
+
+Mediation analysis (both sexes) 
+
+```{r}
+# Run mediation analysis
+acme_TCS <- MediationAnalysisSepages(meth_data = meth_TCS,
+                                     expo_cov = expo_cov_sel,
+                                     mediator = "pc1",
+                                     exposure = "TCS_log2",
+                                     seed = 12345) %>%
+  arrange(CpG)
+
+dim(filter(acme_TCS, acme_p_value < 0.2))[1] # 11
+```
+
+
+### 1.1.3. Both sexes: DMR study on on the CpGs overlapping between the previous study of Jedynak et al. and the current study (337,722 CpGs)
+
+```{r}
+# Create bed files for each exposure so they can be processed by the comb-p
+bedCreator(annotated_EWAS_result = EWAS_overlapping,
+           prefix = "EWAS_overlapping",
+           path = "results/bed_files/both_sexes_overlap")
+```
+
+Setup for DMR analysis: since it is a hypothesis-driven study, p-value for starting a DMR would be increased from 0.001 to 0.05.
+After running the combp analysis, copy output `*.regions-t.bed` files to /comb_p_results folder.
+
+
+```{r}
+# Print results of comb-p analysis based on EWAS
+# All DMR results
+(DMR_results_EWAS_overlapping <- CleanDMRResults(
+  annotated_EWAS_result = EWAS_overlapping,
+  expo_levels = "TCS_log2",
+  expo_labels = "Triclosan",
+  path_to_combp = "results/comb_p_results",
+  annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19))
+```
+
+2 regions were identified encompassing ADORA2B and PEX5. These genes have not been identified previously in EDEN. Changing p-value to start a regon to 0.1 added one DMR (PURA). Increasing the sliding window size to 1000bp added two DMRs (PURA and 1 intergenic region).
+
+
+
+### 1.2.1. Sex-stratified analysis (unadjusted for cellmix) on the triclosan-associated CpGs overlapping between the previous study of Jedynak et al. and the current study (500 CpGs)
+
+
+```{r}
+# Run EWAS
+EWAS_overlapping_sex <- data.frame()
+
+for (sex in c("Male", "Female")) {
+  
+  expo_cov_tech_conf_sex <- filter(expo_cov_tech_conf, child_sex == sex)
+  meth_clean_restr_sex <- meth_clean_restr[rownames(meth_clean_restr) %in% expo_cov_tech_conf_sex$id, ]
+  
+  # Run robust linear regressions and annotate the results
+  EWAS_sex <-
+    SpecificLociMethylationRegressions(
+      meth_data = meth_clean_restr_sex,
+      expo_cov = expo_cov_tech_conf_sex,
+      exposures = "TCS_log2",
+      confounders = confounders[confounders != "child_sex"],
+      technical_confounders = tech_conf_EWAS_DMR,
+      maxit = 400,
+      annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+      expo_labels = "Triclosan",
+      path = "results",
+      file_name = paste0("EWAS_", sex)
+    ) %>%
+    
+    mutate(child_sex = sex)
+  
+  EWAS_overlapping_sex <- bind_rows(EWAS_overlapping_sex, EWAS_sex)
+}
+```
+
+```{r}
+# Prepare SPEAGES dataset for merging
+EWAS_overlap_sex <- EWAS_overlapping_sex %>% 
+  
+  # Select variables of interest
+  select(child_sex, CpG, Estimate, Estimate_CI, raw_p_value, p_value_FDR) %>% 
+  
+  # Add suffix _SEPAGES to the columns of interest to distinguish from the EDEN study
+  rename_at(vars(-c(CpG, child_sex)), function(x) x = paste0(x, "_SEPAGES"))
+
+# Merge SEPAGES and EDEN datasets for comparison
+combined_EDEN_SEPAGES_sex <- EWAS_EDEN %>% 
+  
+  # Restrict EWAS results in EDEN to triclosan
+  filter(Exposure == "TCS_log2") %>% 
+  ungroup() %>% 
+  
+  # Select variables of interest
+  select(CpG, Chr, Position, Gene, Estimate, Estimate_CI, raw_p_value, p_value_FDR, everything()) %>% 
+  
+  # Merge with SEPAGES EWAS results
+  merge(EWAS_overlap_sex, by = "CpG") %>% 
+  
+  # Order the columns and arrange by gene
+  select(CpG:Gene, contains("SEPAGES"), everything(), -Exposure) %>% 
+  arrange(Gene)
+
+# Select CpGs that were associated with triclosan in the EDEN study (FDR p value < 0.05)
+EWAS_EDEN_SEPAGES_sex <- combined_EDEN_SEPAGES_sex %>% 
+  filter(p_value_FDR < 0.05) # 1000 CpGs
+```
+
+
+Calculate the correlation between estimates for EDEN and SEPAGES for boys and girls
+
+```{r}
+combined_EDEN_SEPAGES_sexes <- EWAS_EDEN %>% 
+  
+  # Restrict EWAS results in EDEN to triclosan
+  filter(Exposure == "TCS_log2", CpG %in% unique(EWAS_EDEN_SEPAGES_sex$CpG)) %>% 
+  ungroup() %>% 
+  
+  # Add variable child sex to EDEN study, to distinguish from SEPAGES
+  mutate(child_sex = "Male_EDEN") %>% 
+  
+  # Bind sex-stratified EWAS results
+  bind_rows(filter(EWAS_overlapping_sex, CpG %in% unique(EWAS_EDEN_SEPAGES_sex$CpG))) %>% 
+  
+  # Add categorical p-value variable for SEPAGES data for plotting later (EDEN data points will contain NA)
+  mutate(child_sex = factor(child_sex),
+         cat_p_value = case_when(raw_p_value < 0.05 & child_sex != "Male_EDEN" ~ "Nominal p-value < 0.05",
+                                 child_sex != "Male_EDEN" & raw_p_value >= 0.05 & raw_p_value < 0.1 ~ paste0("0.05 ", "\U2264", " Nominal p-value < 0.1"),
+                                 raw_p_value > 0.1 & child_sex != "Male_EDEN" ~ paste0("Nominal p-value ", "\U2265", " 0.1"),
+                                 TRUE ~ NA_character_),
+         cat_p_value = factor(cat_p_value, levels = c("Nominal p-value < 0.05", paste0("0.05 ", "\U2264", " Nominal p-value < 0.1"), paste0("Nominal p-value ", "\U2265", " 0.1")))) %>%
+  
+  # Create a table of estimates and p-values for EDEN and SEPAGES (only TCS-associted CpGs identified in the EDEN study will contain estimates, the rest will be NA)
+  pivot_wider(id_cols = c(CpG, Gene),
+              names_from = child_sex,
+              values_from = c(Estimate, cat_p_value))
+
+# Calculate correlation between regression estimates for EDEN (males) and SEPAGES (males)
+str_c("Males: ", round(cor(x = combined_EDEN_SEPAGES_sexes$Estimate_Male_EDEN,
+                           y = combined_EDEN_SEPAGES_sexes$Estimate_Male), 2))
+
+# Calculate correlation between regression estimates for EDEN (males) and SEPAGES (females)
+str_c("Females: ", round(cor(x = combined_EDEN_SEPAGES_sexes$Estimate_Male_EDEN,
+                             y = combined_EDEN_SEPAGES_sexes$Estimate_Female), 2))
+```
+
+Betas in SEPAGES obtained for males do not correlate with betas in EDEN (rho = 0.06). Betas in SEPAGES obtained for females strongly correlate with betas in EDEN (rho = 0.72).
+
+
+```{r}
+# Extract significant differentially methylated CpGs per sex
+sign_CpGs_girls <- 
+  filter(EWAS_EDEN_SEPAGES_sex, child_sex == "Female", raw_p_value_SEPAGES < 0.05) %>% 
+  arrange(raw_p_value_SEPAGES)
+
+sign_CpGs_boys <-
+  filter(EWAS_EDEN_SEPAGES_sex, child_sex == "Male", raw_p_value_SEPAGES < 0.05)
+```
+
+
+There are 5 significant CpGs for males and 80 for females (nominal p-value < 0.05).
+
+```{r}
+girls_boys_genes <- CpGsInGenes(sign_CpGs_girls, "Gene") %>% 
+  bind_rows(CpGsInGenes(sign_CpGs_boys, "Gene"))
+
+# Search for imprinted genes
+girls_boys_genes %>%
+  filter(Gene %in% imprinted_genes$Gene_id) # There are 4 imprinted genes in sex-stratified analysis (in girls)
+
+imprinted_genes %>%
+  filter(Gene_id %in% girls_boys_genes$Gene)
+```
+
+
+```{r}
+# Display genes in common between sex-stratified analysis and analysis considering both sexes
+filter(girls_boys_genes, Gene %in% genes_both$Gene) # There are 13 genes in common between both sexes and girls and boys separately (12 for females and 1 for males)
+```
+
+### 1.2.2. Sex-stratified mediation analysis
+
+We would like to know if the effect of triclosan exposure on DNA methylation is mediated by the cell mix (restricted to CpGs for which the % difference between beta estimates was >= 20%).
+
+```{r}
+# Run robust linear regressions adjusted for cell-mix for each sex and annotate the results
+EWAS_cellmix_sexes <- data.frame()
+
+for (sex in c("Male", "Female")) {
+  
+  expo_cov_tech_conf_cellmix_sex <- filter(expo_cov_tech_conf_cellmix, child_sex == sex)
+  meth_clean_restr_cellmix_sex <- meth_clean_restr[rownames(meth_clean_restr) %in% expo_cov_tech_conf_cellmix_sex$id, ]
+  
+  # Run robust linear regressions and annotate the results
+  EWAS_cell_sex <-
+    SpecificLociMethylationRegressions(
+      meth_data = meth_clean_restr_cellmix_sex,
+      expo_cov = expo_cov_tech_conf_cellmix_sex,
+      exposures = "TCS_log2",
+      confounders = confounders[confounders != "child_sex"],
+      technical_confounders = c(tech_conf_EWAS_DMR, cell_mix),
+      maxit = 400,
+      annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+      expo_labels = "Triclosan",
+      path = "results",
+      file_name = paste0("EWAS_cellmix_", sex)
+    ) %>%
+    mutate(child_sex = sex)
+  
+  EWAS_cellmix_sexes <- bind_rows(EWAS_cellmix_sexes, EWAS_cell_sex)
+}
+
+# Restrict results to 500 triclosan-associated CpGs (1000 CpGs for both sexes)
+EWAS_cellmix_sex <- EWAS_cellmix_sexes %>% 
+  filter(CpG %in% pull(filter(EWAS_EDEN, p_value_FDR < 0.05, Exposure == "TCS_log2"), CpG))
+```
+
+
+Females
+
+```{r}
+EWAS_cellmix_females <- EWAS_cellmix_sex %>%
+  filter(child_sex == "Female") %>% 
+  select(CpG, Estimate, Estimate_CI, raw_p_value) %>%
+  arrange(CpG) %>% 
+  rename_at(vars(-CpG), function(x) paste(x, "cellmix_female", sep = "_"))
+
+EWAS_combined_cellmix_females <- EWAS_EDEN_SEPAGES_sex %>% 
+  filter(child_sex == "Female") %>% 
+  
+  # Add information on mean and SD of methylation level 
+  merge(mean_meth, by = "CpG") %>%
+  arrange(CpG) %>% 
+  select(CpG:Gene, 
+         Location_of_CpG, 
+         Location_in_gene, 
+         Mean_meth, 
+         SD_meth, 
+         Estimate_SEPAGES,
+         Estimate_CI_SEPAGES, 
+         raw_p_value_SEPAGES,
+         Estimate, 
+         Estimate_CI, 
+         raw_p_value,
+         p_value_FDR) %>% 
+  
+  # Merge with sensitivity EWAS adjusted for cellmix
+  merge(EWAS_cellmix_females, by = "CpG") %>% 
+  
+  # Calculate the absolute difference in the estimates of main and sensitivity analyses
+  mutate(perc_diff_main_cellmix_female = round((Estimate_SEPAGES - Estimate_cellmix_female) * 100 / Estimate_SEPAGES, 1)) %>% 
+  select(CpG:SD_meth, 
+         Estimate_CI_SEPAGES, 
+         raw_p_value_SEPAGES,
+         Estimate_CI_cellmix_female,
+         raw_p_value_cellmix_female,
+         perc_diff_main_cellmix_female,
+         Estimate_CI,
+         raw_p_value)
+
+# Count CpGs that are significant after cell mix adjustment 
+filter(EWAS_combined_cellmix_females, raw_p_value_SEPAGES < 0.05, raw_p_value_cellmix_female < 0.05) %>% 
+  pull(CpG) %>% 
+  length() # 14 CpGs were significant after additional adjustment
+```
+
+```{r}
+# Create a dataset with the variables of interest that will be used in the mediation analysis
+expo_cov_sel_female <- expo_cov_tech_conf_cellmix %>% 
+  filter(child_sex == "Female") %>% 
+  select(id, TCS_log2, all_of(confounders), all_of(tech_conf_EWAS_DMR), Endothelial:Trophoblasts, -child_sex)
+```
+
+```{r}
+# Create a composite variable for cell types using PCA: run PCA on cell types to make a 'representative' of the 5 cell types
+pca_cells_female <- expo_cov_sel_female %>% 
+  select(Endothelial:Trophoblasts) %>% 
+  prcomp(center = TRUE, scale = TRUE, retx = TRUE)
+
+summary(pca_cells_female) # 51% of the variance explained by PC1
+
+# Add PC1 to the dataset
+expo_cov_sel_female$pc1 <- pca_cells_female$x[, 1]
+```
+
+
+```{r}
+# Extract significant results for TCS with beta difference greater equal 20 percent
+EWAS_indx_TCS_females <- EWAS_combined_cellmix_females %>% 
+  filter(raw_p_value_SEPAGES < 0.05 & perc_diff_main_cellmix_female >= 20) %>% # 79 differentially methylated CpGs with beta difference >= 20% (out of 80)
+  pull(CpG)
+
+# Extract females IDs
+IDs_indx_females <- expo_cov_sel_female %>% 
+  pull(id)
+
+# Restrict the original methylation dataset to CpGs differentially methylated for TCS and female IDs
+meth_TCS_females <- meth_clean[rownames(meth_clean) %in% IDs_indx_females, colnames(meth_clean) %in% EWAS_indx_TCS_females] # 185 x 79
+```
+
+
+Mediation analysis (females)
+
+```{r}
+# Run mediation analysis
+acme_TCS_females <- MediationAnalysisSepages(meth_data = meth_TCS_females,
+                                             expo_cov = expo_cov_sel_female,
+                                             mediator = "pc1",
+                                             exposure = "TCS_log2",
+                                             seed = 12345,
+                                             sex = TRUE) %>%
+  arrange(CpG)
+
+# Save the vector with ACME p values
+write.csv(acme_TCS_females, here("results", "acme_TCS_mediation_females.csv"), row.names = FALSE)
+
+dim(filter(acme_TCS_females, acme_p_value < 0.2))[1] # 77
+```
+
+Males
+
+```{r}
+EWAS_cellmix_males <- EWAS_cellmix_sex %>%
+  filter(child_sex == "Male") %>% 
+  select(CpG, Estimate, Estimate_CI, raw_p_value) %>%
+  arrange(CpG) %>% 
+  rename_at(vars(-CpG), function(x) paste(x, "cellmix_male", sep = "_"))
+
+EWAS_combined_cellmix_males <- EWAS_EDEN_SEPAGES_sex %>% 
+  filter(child_sex == "Male") %>% 
+  
+  # Add information on mean and SD of methylation level 
+  merge(mean_meth, by = "CpG") %>%
+  arrange(CpG) %>% 
+  select(CpG:Gene, 
+         Location_of_CpG, 
+         Location_in_gene, 
+         Mean_meth, 
+         SD_meth, 
+         Estimate_SEPAGES,
+         Estimate_CI_SEPAGES, 
+         raw_p_value_SEPAGES,
+         Estimate, 
+         Estimate_CI, 
+         raw_p_value,
+         p_value_FDR) %>% 
+  
+  # Merge with sensitivity EWAS adjusted for cellmix
+  merge(EWAS_cellmix_males, by = "CpG") %>% 
+  
+  # Calculate the absolute difference in the estimates of main and sensitivity analyses
+  mutate(perc_diff_main_cellmix_male = round((Estimate_SEPAGES - Estimate_cellmix_male) * 100 / Estimate_SEPAGES, 1)) %>% 
+  select(CpG:SD_meth, 
+         Estimate_CI_SEPAGES, 
+         raw_p_value_SEPAGES,
+         Estimate_CI_cellmix_male,
+         raw_p_value_cellmix_male,
+         perc_diff_main_cellmix_male,
+         Estimate_CI,
+         raw_p_value)
+
+# Count CpGs that are significant after cell mix adjustment 
+filter(EWAS_combined_cellmix_males, raw_p_value_SEPAGES < 0.05, raw_p_value_cellmix_male < 0.05) %>% 
+  pull(CpG) %>% 
+  length() # 4 CpGs
+```
+
+```{r}
+# Create a dataset with the variables of interest that will be used in the mediation analysis
+expo_cov_sel_male <- expo_cov_tech_conf_cellmix %>% 
+  filter(child_sex == "Male") %>% 
+  select(id, TCS_log2, all_of(confounders), all_of(tech_conf_EWAS_DMR), Endothelial:Trophoblasts, -child_sex)
+```
+
+```{r}
+# Create a composite variable for cell types using PCA: run PCA on cell types to make a 'representative' of the 5 cell types
+pca_cells_male <- expo_cov_sel_male %>% 
+  select(Endothelial:Trophoblasts) %>% 
+  prcomp(center = TRUE, scale = TRUE, retx = TRUE)
+
+summary(pca_cells_male) # 54% of the variance explained by PC1
+
+# Add PC1 to the dataset
+expo_cov_sel_male$pc1 <- pca_cells_male$x[, 1]
+```
+
+```{r}
+# Extract significant results for TCS with beta difference greater equal 20 percent
+EWAS_indx_TCS_males <- EWAS_combined_cellmix_males %>% 
+  filter(raw_p_value_SEPAGES < 0.05 & perc_diff_main_cellmix_male >= 20) %>% # 1 differentially methylated CpGs with beta difference >= 20% (out of 5)
+  pull(CpG)
+
+# Extract males IDs
+IDs_indx_males <- expo_cov_sel_male %>% 
+  pull(id)
+
+# Restrict the original methylation dataset to CpGs differentially methylated for TCS and male IDs
+meth_TCS_males <- meth_clean[rownames(meth_clean) %in% IDs_indx_males, colnames(meth_clean) %in% EWAS_indx_TCS_males]
+```
+
+
+Mediation analysis (males) 
+
+```{r}
+# Run mediation analysis
+acme_TCS_males <- .Mediation(CpG = meth_TCS_males,
+                             expo_cov = expo_cov_sel_male,
+                             mediator = "pc1",
+                             exposure = "TCS_log2",
+                             seed = 12345,
+                             sex = TRUE)
+
+acme_TCS_males <- data.frame("CpG" = EWAS_indx_TCS_males,
+                             "acme_CIs" = acme_TCS_males$acme_CIs,
+                             "acme_p_value" = acme_TCS_males$acme_p_value)
+```
+
+
+### 1.2.3. Sex-stratified DMR study on on the CpGs overlapping between the previous study of Jedynak et al. and the current study (337,722 CpGs)
+
+Setup for DMR analysis: since it is a hypothesis-driven study, p-value for starting a DMR would be increased from 0.001 to 0.05.
+After running the combp analysis, copy output `*.regions-t.bed` files to /comb_p_results folder.
+
+```{r}
+# Create bed files for each exposure so they can be processed by the comb-p
+for (sex in c("Male", "Female")) {
+  
+  bedCreator(annotated_EWAS_result = filter(EWAS_overlapping_sex, child_sex == sex),
+             prefix = paste0("EWAS_overlap_sex_", sex),
+             path = "results/bed_files/sex_strat_overlap")
+}
+```
+
+```{r}
+# Sex-stratified DMR results
+
+DMR_results_sex <- data.frame()
+
+for (sex in c("Male", "Female")) {
+  
+  DMR_sex <- CleanDMRResults(
+    annotated_EWAS_result = filter(EWAS_overlap_sex, child_sex == sex),
+    expo_levels = "TCS_log2",
+    expo_labels = "Triclosan",
+    path_to_combp = paste0("results/comb_p_results/sex_strat_analysis/", sex),
+    annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19) %>%
+    mutate(child_sex = sex)
+  
+  DMR_results_sex <- bind_rows(DMR_results_sex, DMR_sex)
+}
+```
+
+31 DMR identified for females, 3 for males. SEPT9 and SYNGAP1 found for females have been previously identified in DMR analysis in EDEN (as positively methylated). Both genes were also identified in EWAS in EDEN. In SEPAGES, in EWAS they were not identified.
+For males nothing overlaps with EDEN.
+
+```{r}
+# Select genes ovrlapping between the two studies
+genes_DMR_sex <- DMR_results_sex %>% 
+  CpGsInGenes(var_to_distinct = "Gene") %>% 
+  select(child_sex, Gene) %>% 
+  filter(Gene %in% genes_DMR_2probes$Gene)
+```
+
+
+## **2. Agnostic approach (exploratory analysis)**
+
+All CpGs available in the SEPAGES would be considered, EWAS and then DMR analysis would be run, with standard p-value corrections applied (the same setting as in EDEN). Here p-value for an interaction term with sex will be also presented.
+
+
+### 2.1.1. Both sexes: EWAS
+
+```{r}
+# Run robust linear regressions and annotate the results. This operation takes a long time.
+EWAS_agnostic <-
+  SpecificLociMethylationRegressions(
+    meth_data = meth_clean,
+    expo_cov = expo_cov_tech_conf,
+    exposures = "TCS_log2",
+    confounders = confounders,
+    technical_confounders = tech_conf_EWAS_DMR,
+    maxit = 400,
+    annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+    expo_labels = "Triclosan",
+    path = "results",
+    file_name = "EWAS_agnostic")
+```
+
+```{r}
+# Print minimum FDR-corrected p-value
+min(EWAS_agnostic$p_value_FDR)
+```
+
+No significant CpGs with the FDR corrected p-value.
+
+
+### 2.1.2. Both sexes: DMR
+
+Setup for DMR analysis: since it is an exploratory study, p-value for starting a DMR would be kept as in EDEN at 0.001 level.
+
+After running the combp analysis, copy output `*.regions-t.bed` files to /comb_p_results folder.
+
+```{r}
+# Create bed files for each exposure so they can be processed by the comb-p
+bedCreator(annotated_EWAS_result = EWAS_agnostic,
+           prefix = "EWAS_agnostic",
+           path = "results/bed_files/both_sexes_agnostic")
+```
+
+No DMRs detected.
+
+
+### 2.2.1. Sex-stratified analysis: EWAS
+
+```{r}
+EWAS_agnostic_sex <- data.frame()
+
+for (sex in c("Male", "Female")) {
+  
+  expo_cov_tech_conf_sex <- filter(expo_cov_tech_conf, child_sex == sex)
+  meth_clean_restr_sex <- meth_clean[rownames(meth_clean) %in% expo_cov_tech_conf_sex$id, ]
+  
+  EWAS_sex <- SpecificLociMethylationRegressions(
+    meth_data = meth_clean_restr_sex,
+    expo_cov = expo_cov_tech_conf_sex,
+    exposures = "TCS_log2",
+    confounders = confounders[confounders != "child_sex"],
+    technical_confounders = tech_conf_EWAS_DMR,
+    maxit = 400,
+    annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+    expo_labels = "Triclosan",
+    path = "results",
+    file_name = paste0("EWAS_agnostic_", sex),
+    ncores = 3
+  ) %>%
+    mutate(child_sex = sex)
+  
+  EWAS_agnostic_sex <- bind_rows(EWAS_agnostic_sex, EWAS_sex)
+}
+```
+
+```{r}
+# Print minimum FDR-corrected p-value
+for (sex in c("Male", "Female")) {
+  
+  print(min(EWAS_agnostic_sex$p_value_FDR))
+}
+```
+
+No significant CpGs for either sex (FDR-corrected p-value).
+
+
+### 2.2.2. Sex-stratified analysis: DMR
+
+Setup for DMR analysis: since it is an exploratory study, p-value for starting a DMR would be kept as in EDEN at 0.001 level.
+
+After running the combp analysis, copy output `*.regions-t.bed` files to /comb_p_results folder.
+
+```{r}
+# Create bed files for each exposure so they can be processed by the comb-p
+for (sex in c("Male", "Female")) {
+  
+  bedCreator(annotated_EWAS_result = filter(EWAS_agnostic_sex, child_sex == sex),
+             prefix = paste0("EWAS_agnostic_sex_", sex),
+             path = "results/bed_files/sex_strat_agnostic")
+}
+```
+
+
+```{r}
+DMR_results_agnostic_sex <- data.frame()
+
+for (sex in c("Male", "Female")) {
+  
+  DMR_sex <- CleanDMRResults(
+    annotated_EWAS_result = filter(EWAS_agnostic_sex, child_sex == sex),
+    expo_levels = "TCS_log2",
+    expo_labels = "Triclosan",
+    path_to_combp = paste0("results/comb_p_results/sex_strat_agnostic/", sex),
+    annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19) %>%
+    mutate(child_sex = sex)
+  
+  DMR_results_agnostic_sex <- bind_rows(DMR_results_agnostic_sex, DMR_sex)
+}
+```
+
+One DMR was returned for males (LURAP1;POMGNT1) and 3 for females (2 intergenic regions and CLASP2). None was previously identified for EDEN.
+
+
+## **3. Sensitivity analysis: trimester-specific associations**
+
+Check if the associations persist significant when studying T2 and T3 triclosan exposure separately
+
+### 3.1.1. Both sexes: candidate approach
+
+```{r}
+# Restrict methylation sites to 500 CpGs overlapping between EDEN and SEPAGES
+meth_clean_restr_500_both <- meth_clean_restr[, colnames(meth_clean_restr) %in% unique(EWAS_EDEN_SEPAGES$CpG)]
+
+# Run EWAS
+EWAS_overlapping_trim <- data.frame()
+
+for (trim in c("t2_log2", "t3_log2")) {
+  
+  # Run robust linear regressions and annotate the results
+  EWAS_overl_trim <-
+    SpecificLociMethylationRegressions(
+      meth_data = meth_clean_restr_500_both,
+      expo_cov = expo_cov_tech_conf,
+      exposures = trim,
+      confounders = confounders,
+      technical_confounders = tech_conf_EWAS_DMR,
+      maxit = 400,
+      annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+      expo_labels = paste0("Triclosan_", trim),
+      path = "results",
+      file_name = paste0("EWAS_overlapping_", trim)
+    )
+  
+  EWAS_overlapping_trim <- bind_rows(EWAS_overlapping_trim, EWAS_overl_trim)
+}
+
+EWAS_overlapping_trim <- EWAS_overlapping_trim %>%
+  mutate(child_sex = "both_sexes")
+```
+
+```{r}
+# Select significant CpGs
+both_t2_sign <- EWAS_overlapping_trim %>% 
+  filter(raw_p_value < 0.05, Exposure == "t2_log2") # 19 significant CpGs
+
+both_t3_sign <- EWAS_overlapping_trim %>% 
+  filter(raw_p_value < 0.05, Exposure == "t3_log2") # 9 significant CpGs
+
+# Compare if the effects are preserved for T2, T3 and averaged conc. 
+# T2
+intersect(pull(both_t2_sign, CpG),
+          pull(filter(EWAS_EDEN_SEPAGES, raw_p_value_SEPAGES < 0.05), CpG)) # 10 CpGs intersect and the genes: ARMC3, CRIM1, FGF11, ITPKA, LRRC8D, MYO9B, RHOBTB3, SLC35C1, SMOC1, UMOLD1
+
+# T3
+intersect(pull(both_t3_sign, CpG),
+          pull(filter(EWAS_EDEN_SEPAGES, raw_p_value_SEPAGES < 0.05), CpG)) # 4 CpGs intersect and genes: ARMC3, FGF11, UMOLD1
+
+# Compare if the effects are preserved between T2 and T3
+inters_T2_T3_both <- intersect(pull(both_t2_sign, CpG), pull(both_t3_sign, CpG)) # 3 CpGs intersect (ARMC3, FGF11, UMOLD1)
+```
+
+
+```{r}
+# Calculate correlation between trimesters
+EWAS_overl_trim_wide_estim <- EWAS_overlapping_trim %>% 
+  select(Exposure, CpG, Estimate) %>% 
+  pivot_wider(id_cols = CpG,
+              names_from = Exposure,
+              values_from = Estimate)
+
+round(cor(EWAS_overl_trim_wide_estim$t2_log2, EWAS_overl_trim_wide_estim$t3_log2), 2) # 0.65
+```
+
+Calculate correlation between SEPAGES and EDEN for trimester specific associations
+
+```{r}
+EWAS_overl_trim_plot <- EWAS_overlapping_trim %>% 
+  rename_at(vars(Estimate, raw_p_value), function(x) x = paste0(x, "_SEPAGES")) %>% 
+  select(CpG, Gene, Exposure, contains("SEPAGES"))
+
+combined_EDEN_SEPAGES_trim <- EWAS_EDEN_SEPAGES %>% 
+  select(CpG, Estimate, raw_p_value) %>% 
+  left_join(EWAS_overl_trim_plot, by = "CpG") %>% 
+  pre_proc_data_plot_trim(inters_T2_T3 = inters_T2_T3_both) %>% 
+  mutate(Exposure = ifelse(Exposure == "Urine pool 1", "Urine pool 1 (trimester 2)", "Urine pool 2 (trimester 3)"))
+
+str_c("Both sexes, T2: ", (combined_EDEN_SEPAGES_trim %>% 
+                             filter(Exposure == "Urine pool 1 (trimester 2)") %>% 
+                             select(contains("Estimate")) %>% 
+                             cor())["Estimate", 2] %>% 
+        round(2)) # 0.61
+
+str_c("Both sexes, T2: ", (combined_EDEN_SEPAGES_trim %>% 
+                             filter(Exposure == "Urine pool 2 (trimester 3)") %>% 
+                             select(contains("Estimate")) %>% 
+                             cor())["Estimate", 2] %>% 
+        round(2)) # 0.49
+```
+
+
+```{r}
+EWAS_overlapping_trim_wide <- EWAS_overlapping_trim %>% 
+  select(Exposure, CpG, Estimate_CI, raw_p_value) %>% 
+  pivot_wider(id_cols = CpG,
+              names_from = Exposure,
+              values_from = c(Estimate_CI, raw_p_value)) %>% 
+  select(CpG, contains("_t2_log2"), contains("_t3_log2"))
+
+# Merge SEPAGES and EDEN datasets for comparison
+combined_EDEN_SEPAGES_trim <- EWAS_EDEN %>% 
+  
+  # Restrict EWAS results in EDEN to triclosan
+  filter(Exposure == "TCS_log2") %>% 
+  ungroup() %>% 
+  
+  # Merge with SEPAGES EWAS trim stratifed results
+  right_join(EWAS_overlapping_trim_wide, by = "CpG") %>% 
+  left_join(mean_meth, by = "CpG") %>% 
+  
+  # Select variables of interest
+  select(CpG:Location_in_gene, Mean_meth, SD_meth, contains("_t2_log2"), contains("_t3_log2"), Estimate_CI, raw_p_value)
+```
+
+
+### 3.1.2. Both sexes: agnostic approach
+
+```{r}
+# Run EWAS
+EWAS_agnostic_trim <- data.frame()
+
+for (trim in c("t2_log2", "t3_log2")) {
+  
+  # Run robust linear regressions and annotate the results
+  EWAS_agnostic <-
+    SpecificLociMethylationRegressions(
+      meth_data = meth_clean,
+      expo_cov = expo_cov_tech_conf,
+      exposures = trim,
+      confounders = confounders,
+      technical_confounders = tech_conf_EWAS_DMR,
+      maxit = 400,
+      annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+      expo_labels = paste0("Triclosan_", trim),
+      path = "results",
+      file_name = paste0("EWAS_agnostic_", trim)
+    )
+  
+  EWAS_agnostic_trim <- bind_rows(EWAS_agnostic_trim, EWAS_agnostic)
+}
+```
+
+```{r}
+EWAS_agnostic_trim %>% 
+  group_by(Exposure) %>% 
+  filter(p_value_FDR < 0.05)
+
+min(EWAS_agnostic_trim$p_value_FDR)
+```
+
+No significant results.
+
+
+### 3.2.1 Sex-stratified analysis: candidate approach
+
+```{r}
+# Restrict methylation sites to 500 overlapping CpGs
+meth_clean_restr_500 <- meth_clean_restr[, colnames(meth_clean_restr) %in% unique(EWAS_EDEN_SEPAGES_sex$CpG)]
+
+# Run EWAS
+EWAS_overlapping_sex_trim <- data.frame()
+
+for (trim in c("t2_log2", "t3_log2")) {
+  
+  EWAS_overlapping_sex <- data.frame()
+  
+  for (sex in c("Male", "Female")) {
+    
+    expo_cov_tech_conf_sex <- filter(expo_cov_tech_conf, child_sex == sex)
+    meth_clean_restr_500_sex <- meth_clean_restr_500[rownames(meth_clean_restr_500) %in% expo_cov_tech_conf_sex$id, ]
+    
+    # Run robust linear regressions and annotate the results
+    EWAS_sex <-
+      SpecificLociMethylationRegressions(
+        meth_data = meth_clean_restr_500_sex,
+        expo_cov = expo_cov_tech_conf_sex,
+        exposures = trim,
+        confounders = confounders[confounders != "child_sex"],
+        technical_confounders = tech_conf_EWAS_DMR,
+        maxit = 400,
+        annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+        expo_labels = paste0("Triclosan_", trim),
+        path = "results",
+        file_name = paste0("EWAS_", sex, "_", trim)
+      ) %>%
+      mutate(child_sex = sex)
+    
+    EWAS_overlapping_sex <- bind_rows(EWAS_overlapping_sex, EWAS_sex)
+  }
+  
+  EWAS_overlapping_sex_trim <- bind_rows(EWAS_overlapping_sex_trim, EWAS_overlapping_sex)
+}
+```
+
+```{r}
+# Select significant CpGs for females
+girls_t2_sign <- EWAS_overlapping_sex_trim %>% 
+  filter(child_sex == "Female", raw_p_value < 0.05, Exposure == "t2_log2") # 82 significant CpGs
+
+girls_t3_sign <- EWAS_overlapping_sex_trim %>% 
+  filter(child_sex == "Female", raw_p_value < 0.05, Exposure == "t3_log2") # 23 significant CpGs
+
+# Compare if the effects are preserved for T2, T3 and averaged conc. for females
+# T2
+str_c("Females, T2: ", length(intersect(pull(girls_t2_sign, CpG),
+                                        pull(filter(EWAS_EDEN_SEPAGES_sex, child_sex == "Female", raw_p_value_SEPAGES < 0.05), CpG)))) # 56 CpGs intersect
+
+# T3
+str_c("Females, T3: ", length(intersect(pull(girls_t3_sign, CpG),
+                                        pull(filter(EWAS_EDEN_SEPAGES_sex, child_sex == "Female", raw_p_value_SEPAGES < 0.05), CpG)))) # 19 CpGs intersect
+
+# Intersect T2 and T3
+str_c("Females, intersection T2 & T3: ", str_c(intersect(pull(girls_t2_sign, CpG),
+                                                         pull(girls_t3_sign, CpG)), collapse = ", ")) # 7 CpGs intersect (3 intergenic regions, FARP1, GRK5, LRRC8D, PLEKHA6)
+```
+
+```{r}
+# Select significant CpGs for males
+boys_t2_sign <- EWAS_overlapping_sex_trim %>% 
+  filter(child_sex == "Male", raw_p_value < 0.05, Exposure == "t2_log2") # 4 significant CpGs
+
+boys_t3_sign <- EWAS_overlapping_sex_trim %>% 
+  filter(child_sex == "Male", raw_p_value < 0.05, Exposure == "t3_log2") # 7 significant CpGs
+
+# Compare if the effects are preserved for T2, T3 and averaged conc. for males
+# T2
+str_c("Males, T2: ", length(intersect(pull(boys_t2_sign, CpG),
+                                      pull(filter(EWAS_EDEN_SEPAGES_sex, child_sex == "Male", raw_p_value_SEPAGES < 0.05), CpG)))) # 3 CpGs intersect
+
+# T3
+str_c("Males, T3: ", length(intersect(pull(boys_t3_sign, CpG),
+                                      pull(filter(EWAS_EDEN_SEPAGES_sex, child_sex == "Male", raw_p_value_SEPAGES < 0.05), CpG)))) # 3 CpGs intersect
+
+# Intersect T2 and T3
+inters_T2_T3_males <- intersect(pull(boys_t2_sign, CpG),
+                                pull(boys_t3_sign, CpG)) # 1 CpG intersect (intergenic region)
+
+str_c("Males, intersection T2 & T3: ", inters_T2_T3_males)
+```
+
+
+```{r}
+EWAS_overlapping_sex_trim_wide <- EWAS_overlapping_sex_trim %>% 
+  select(Exposure, child_sex, CpG, Estimate, Estimate_CI, raw_p_value) %>% 
+  pivot_wider(id_cols = c(CpG, child_sex),
+              names_from = Exposure,
+              values_from = c(Estimate, Estimate_CI, raw_p_value)) %>% 
+  select(CpG, child_sex, contains("_t2_log2"), contains("_t3_log2"))
+
+# Merge SEPAGES and EDEN datasets for comparison
+combined_EDEN_SEPAGES_sex_trim <- EWAS_EDEN %>% 
+  
+  # Restrict EWAS results in EDEN to triclosan
+  filter(Exposure == "TCS_log2") %>% 
+  ungroup() %>% 
+  
+  # Merge with SEPAGES EWAS trim stratifed results
+  right_join(EWAS_overlapping_sex_trim_wide, by = "CpG") %>% 
+  left_join(mean_meth, by = "CpG") %>% 
+  
+  # Select variables of interest
+  select(child_sex, CpG:Location_in_gene, Mean_meth, SD_meth, contains("_t2_log2"), contains("_t3_log2"), Estimate, Estimate_CI, raw_p_value)
+```
+
+
+Calculate correlation between SEPAGES and EDEN for trimester specific associations
+
+```{r}
+str_c("Males, T2: ", (combined_EDEN_SEPAGES_sex_trim %>% 
+                        filter(child_sex == "Male") %>% 
+                        select(Estimate_t2_log2, Estimate) %>% 
+                        cor())["Estimate", 1] %>% 
+        round(2)) # 0.06
+
+str_c("Males, T3: ", (combined_EDEN_SEPAGES_sex_trim %>% 
+                        filter(child_sex == "Male") %>% 
+                        select(Estimate_t3_log2, Estimate) %>% 
+                        cor())["Estimate", 1] %>% 
+        round(2)) # 0.07
+
+str_c("Females, T2: ", (combined_EDEN_SEPAGES_sex_trim %>% 
+                          filter(child_sex == "Female") %>% 
+                          select(Estimate_t2_log2, Estimate) %>% 
+                          cor())["Estimate", 1] %>% 
+        round(2)) # 0.71
+
+str_c("Females, T3: ", (combined_EDEN_SEPAGES_sex_trim %>% 
+                          filter(child_sex == "Female") %>% 
+                          select(Estimate_t3_log2, Estimate) %>% 
+                          cor())["Estimate", 1] %>% 
+        round(2)) # 0.63
+```
+
+```{r}
+# Calculate correlation between trimesters
+EWAS_overl_male_trim_wide_estim <- EWAS_overlapping_sex_trim %>% 
+  select(Exposure, child_sex, CpG, Estimate) %>% 
+  filter(child_sex == "Male") %>% 
+  pivot_wider(id_cols = c(CpG, child_sex),
+              names_from = Exposure,
+              values_from = Estimate)
+
+cor(EWAS_overl_male_trim_wide_estim$t2_log2, EWAS_overl_male_trim_wide_estim$t3_log2) # 0.51
+```
+
+
+### 3.2.2 Sex-stratified analysis: agnostic approach
+
+```{r}
+# Run EWAS
+EWAS_agnostic_sex_trim <- data.frame()
+
+for (trim in c("t2_log2", "t3_log2")) {
+  
+  EWAS_agnostic_sex <- data.frame()
+  
+  for (sex in c("Male", "Female")) {
+    
+    expo_cov_tech_conf_sex <- filter(expo_cov_tech_conf, child_sex == sex)
+    meth_clean_sex <- meth_clean[rownames(meth_clean) %in% expo_cov_tech_conf_sex$id, ]
+    
+    # Run robust linear regressions and annotate the results
+    EWAS_sex <-
+      SpecificLociMethylationRegressions(
+        meth_data = meth_clean_sex,
+        expo_cov = expo_cov_tech_conf_sex,
+        exposures = trim,
+        confounders = confounders[confounders != "child_sex"],
+        technical_confounders = tech_conf_EWAS_DMR,
+        maxit = 400,
+        annotation_object = IlluminaHumanMethylationEPICanno.ilm10b4.hg19,
+        expo_labels = paste0("Triclosan_", trim),
+        path = "results",
+        file_name = paste0("EWAS_agnostic_", sex, "_", trim)
+      ) %>%
+      mutate(child_sex = sex)
+    
+    EWAS_agnostic_sex <- bind_rows(EWAS_agnostic_sex, EWAS_sex)
+  }
+  
+  EWAS_agnostic_sex_trim <- bind_rows(EWAS_agnostic_sex_trim, EWAS_agnostic_sex)
+}
+```
+
+```{r}
+# Print minimum FDR-corrected p-value
+EWAS_agnostic_sex_trim %>% 
+  group_by(Exposure, child_sex) %>% 
+  filter(p_value_FDR < 0.05)
+
+min(EWAS_agnostic_sex_trim$p_value_FDR)
+```
+
+No significant results.
+
+
+
+## TABLES
+
+### TABLE 1
+
+Population characteristics for the 395 mother-child pairs included in the study and recruited between 2014 and 2017.
+
+```{r}
+# Load results excel
+Table_1 <- import(here("results", "population_charactersitics.csv")) %>% 
+  as.data.frame()
+
+colnames(Table_1) <- c("Covariate", "Distribution")
+
+write.csv(Table_1, here("results", "tables/Table_1.csv"), row.names = FALSE)
+Table_1
+```
+
+
+### TABLE 2
+
+Average maternal urinary triclosan concentrations assessed in weekly pools collected in the second and third trimesters of pregnancy (n = 395 pregnant women).
+
+
+```{r make table 2}
+Table_2 <- exposure_char %>% 
+  select(child_sex, LOD, contains("t2"), contains("t3"))
+
+write.csv(Table_2, here("results", "tables/Table_2.csv"), row.names = FALSE)
+Table_2
+```
+
+
+
+### TABLE 3
+
+DMRs associated with pregnancy concentrations of triclosan (Šidák-corrected p-value < 0.05; males n = 210, females n = 185).
+
+```{r}
+DMR_results_sex <- DMR_results_sex[str_detect(DMR_results_sex$Gene, paste0(genes_DMR_sex$Gene, collapse = "|")), ] %>% 
+  mutate(study = "concept-driven") 
+
+Table_3 <- DMR_results_agnostic_sex %>% 
+  mutate(study = "agnostic") %>% 
+  bind_rows(DMR_results_sex) %>% 
+  CpGsInGenes(var_to_distinct = "Hg19") %>% 
+  select(child_sex, everything(), -Exposure)
+
+write.csv(Table_3, here("results", "tables/Table_3.csv"), row.names = FALSE)
+```
+
+
+
+## FIGURES
+
+
+### FIGURE 1
+
+Figure made externally. 
+Workflow of the study.
+
+
+### FIGURE 2
+
+β regression coefficient estimates obtained in a sex-stratified analysis in the current study in function of the regression coefficient estimates obtained for the 500 CpGs associated with triclosan in our previous study on males (Jedynak et al. 2021). The dots represent regression coefficient estimates with nominal p-value < 0.05 (red), 0.05 ≤ nominal p-value < 0.1 (green), and nominal p-value ≥ 0.1 (gray). The blue line represents the best linear fit for the association. β estimates correspond to a change in the DNA methylation level for doubling of the urinary triclosan concentration. Regression models in the current study were adjusted for maternal active smoking before and/or during pregnancy, maternal age, gestational age at delivery, parity, maternal education level, maternal pre-pregnancy BMI, season of conception, batch, plate, and chip.
+
+
+```{r draw Figure 2}
+# Plot beta coefficients of 500 common CpGs
+coeff_both <- EWAS_EDEN_SEPAGES %>% 
+  mutate(Gene = case_when(raw_p_value_SEPAGES < 0.05 ~ Gene,
+                          TRUE ~ ""),
+         Gene = word(Gene, 1, sep = ";"),
+         Gene = case_when(Gene == "Unknown" ~ "Interegenic reg.",
+                          TRUE ~ Gene),
+         cat_p_value = case_when(raw_p_value_SEPAGES < 0.05 ~ "Nominal p-value < 0.05",
+                                 raw_p_value_SEPAGES >= 0.05 & raw_p_value_SEPAGES < 0.1 ~ paste0("0.05 ", "\U2264", " Nominal p-value < 0.1"),
+                                 TRUE ~ paste0("Nominal p-value ", "\U2265", " 0.1")),
+         cat_p_value = factor(cat_p_value, levels = c("Nominal p-value < 0.05", paste0("0.05 ", "\U2264", " Nominal p-value < 0.1"), paste0("Nominal p-value ", "\U2265", " 0.1"))))
+
+plot_both <- ggplot(coeff_both, aes(x = Estimate, y = Estimate_SEPAGES, label = Gene)) +
+  geom_point(aes(color = cat_p_value)) +
+  scale_color_manual(values = c("red", 
+                                "green",
+                                "gray"), name = "Significance") + 
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_text_repel(box.padding = 1, max.overlaps = Inf, fontface = "italic") +
+  theme_bw(base_size = 11) + 
+  theme(legend.position = "right") + 
+  ylab("β for the current study (SEPAGES)") + 
+  xlab("β for the previous study (EDEN)") +
+  ylim(-0.012, 0.015) +
+  xlim(-0.012, 0.015) +
+  ggtitle("Males (EDEN) vs. both males and females (SEPAGES), rho = 0.6")
+
+# Plot beta coefficients of 500 common CpGs
+coeff_Males <- combined_EDEN_SEPAGES_sexes %>% 
+  mutate(Gene = case_when(cat_p_value_Male == "Nominal p-value < 0.05" ~ Gene,
+                          TRUE ~ ""),
+         Gene = word(Gene, 1, sep = ";"),
+         Gene = case_when(Gene == "Unknown" ~ "Interegenic reg.",
+                          TRUE ~ Gene))
+
+plot_Male <- ggplot(coeff_Males, aes(x = Estimate_Male_EDEN, y = Estimate_Male, label = Gene)) +
+  geom_point(aes(color = cat_p_value_Male)) +
+  scale_color_manual(values = c("red", 
+                                "green",
+                                "gray"), name = "Significance") + 
+  geom_smooth(method = "lm", se = FALSE) +
+  geom_text_repel(box.padding = 0.5, max.overlaps = Inf, fontface = "italic") +
+  theme_bw(base_size = 11) + 
+  theme(legend.position = "right") + 
+  ylab("β for the current study (SEPAGES)") + 
+  xlab("β for the previous study (EDEN)") +
+  ylim(-0.012, 0.015) +
+  xlim(-0.012, 0.015) +
+  ggtitle("Males (EDEN) vs. males (SEPAGES), rho = 0.06")
+
+ggarrange(plot_both, 
+          plot_Male,
+          ncol = 2, 
+          nrow = 1,
+          common.legend = TRUE,
+          legend = "bottom")
+
+ggsave(filename = here("results", "figures/Figure_2.jpeg"),
+       plot = last_plot(), 
+       units = "px",
+       dpi = 250, 
+       width = 3500, 
+       height = 1400)
+```
+
+
+## SUPPLEMENTARY TABLES
+
+
+### SUPPLEMENTARY TABLE 1
+
+The number of urine samples provided by the participants of the study and included in each urine pool.
+
+```{r}
+write.csv(n_pools, here("results", "tables/Suppl_Table_1.csv"), row.names = FALSE)
+```
+
+
+### SUPPLEMENTARY TABLE 2
+
+Candidate approach: differentially methylated CpGs associated with triclosan exposure in the previous work (Jedynak et al. 2021) (FDR-corrected p-value <0.05, n = 202 males) and their counterparts in the current study when both males and females were considered (500 CpGs, n = 395). The table is sorted by nominal p-value for the associations detected in the main analysis unadjusted for placental cell heterogeneity.
+
+```{r}
+EWAS_combined_cellmix %>% 
+  
+  # Change number format
+  mutate_at(vars(contains("raw_p_value")), formatC, format = "e", digits = 1) %>% 
+  
+  mutate_if(is.numeric, round, 2) %>% 
+  left_join(acme_TCS, by = "CpG") %>% 
+  
+  # Select columns in the right order and arrange
+  select(CpG:SD_meth, 
+         Estimate_CI_SEPAGES, 
+         raw_p_value_SEPAGES,
+         Estimate_CI_cellmix,
+         raw_p_value_cellmix,
+         perc_diff_main_cellmix,
+         acme_CIs,
+         acme_p_value,
+         Estimate_CI:raw_p_value) %>% 
+  mutate(Gene = str_replace(Gene, "Unknown", "")) %>% 
+  
+  write.csv(here("results", "tables/Suppl_Table_2.csv"), row.names = FALSE)
+```
+
+
+Regression models in the current study were adjusted for maternal active smoking before and/or during pregnancy, maternal age, gestational age at delivery, parity, maternal education level, maternal pre-pregnancy BMI, season of conception, child’s sex as well as the technical parameters  batch, plate, and chip. In grey, CpGs with nominal p-value <0.05 in the current study. In bold, CpGs mapping to imprinted genes.
+
+a University of California, Santa Cruz Genome Browser (https://genome.ucsc.edu).
+b Mediation analysis was performed for CpGs associated with triclosan for which the absolute percentage difference between regression coefficient estimates obtained in models unadjusted and adjusted for placental tissue heterogeneity was ≥20%.
+c Point estimates for ACME with CIs estimated with a quasi-Bayesian approximation.
+d Two-sided p-value for ACME.
+Abbreviations: ACME = average causal mediation effect. Chr = chromosome. CI = confidence interval. FDR = false discovery rate.
+
+
+### SUPPLEMENTARY TABLE 3
+
+Candidate approach: differentially methylated CpGs associated with triclosan exposure in the previous study (Jedynak et al., 2021) (FDR-corrected p-value <0.05, n = 202 males) and their counterparts in the current study when both males and females were considered and data was stratified by the time point in pregnancy when triclosan exposure was assessed (500 CpGs, n = 395).
+
+```{r}
+write.csv(combined_EDEN_SEPAGES_trim, here("results", "tables/Suppl_Table_3.csv"), row.names = FALSE)
+```
+
+Regression models in the current study were adjusted for maternal active smoking before and/or during pregnancy, maternal age, gestational age at delivery, parity, maternal education level, maternal pre-pregnancy BMI, season of conception, child’s sex as well as the technical parameters batch, plate, and chip. In grey, CpGs with nominal p-value <0.05 in the current study.
+a University of California, Santa Cruz Genome Browser (https://genome.ucsc.edu).
+Abbreviations: Chr = chromosome. CI = confidence interval. FDR = false discovery rate.
+
+
+### SUPPLEMENTARY TABLE 4
+
+Candidate approach: differentially methylated CpGs associated with triclosan exposure in the previous work (Jedynak et al. 2021) (FDR-corrected p-value <0.05, n = 202 males) and their counterparts in the current study in males (500 CpGs, n = 210 males). The table is sorted by nominal p-value for the associations detected in the main analysis unadjusted for placental cell heterogeneity.
+
+```{r}
+EWAS_combined_cellmix_males %>% 
+  
+  mutate_at(vars(Mean_meth, SD_meth), round, 2) %>% 
+  left_join(acme_TCS_males, by = "CpG") %>% 
+  
+  # Select columns in the right order and arrange
+  select(CpG:perc_diff_main_cellmix_male,
+         acme_CIs,
+         acme_p_value,
+         Estimate_CI:raw_p_value) %>% 
+  mutate(Gene = str_replace(Gene, "Unknown", "")) %>% 
+  arrange(raw_p_value_SEPAGES) %>% 
+  
+  write.csv(here("results", "tables/Suppl_Table_4.csv"), row.names = FALSE)
+```
+
+Regression models in the current study were adjusted for maternal active smoking before and/or during pregnancy, maternal age, gestational age at delivery, parity, maternal education level, maternal pre-pregnancy BMI, season of conception as well as the technical parameters batch, plate, and chip. In grey, CpGs with nominal p-value <0.05 in the current study.
+a University of California, Santa Cruz Genome Browser (https://genome.ucsc.edu).
+b Mediation analysis was performed for CpGs associated with triclosan for which the absolute percentage difference between regression coefficient estimates obtained in models unadjusted and adjusted for placental tissue heterogeneity was ≥20%.
+c Point estimates for ACME with CIs estimated with a quasi-Bayesian approximation.
+d Two-sided p-value for ACME.
+Abbreviations: ACME = average causal mediation effect. Chr = chromosome. CI = confidence interval. FDR = false discovery rate.
+
+
+### SUPPLEMENTARY TABLE 5
+
+Candidate approach: differentially methylated CpGs associated with triclosan exposure in the previous work (Jedynak et al. 2021) (FDR-corrected p-value <0.05, n = 202 males) and their counterparts in the current study in males, where data was stratified by the time point in pregnancy when triclosan exposure was assessed (500 CpGs, n = 210 males).
+
+```{r}
+combined_EDEN_SEPAGES_sex_trim %>% 
+  filter(child_sex == "Male") %>% 
+  write.csv(here("results", "tables/Suppl_Table_5.csv"), row.names = FALSE)
+```
+
+Regression models in the current study were adjusted for maternal active smoking before and/or during pregnancy, maternal age, gestational age at delivery, parity, maternal education level, maternal pre-pregnancy BMI, season of conception as well as the technical parameters batch, plate, and chip. In grey, CpGs with nominal p-value <0.05 in the current study.
+a University of California, Santa Cruz Genome Browser (https://genome.ucsc.edu).
+Abbreviations: Chr = chromosome. CI = confidence interval. FDR = false discovery rate.
+
+
+### SUPPLEMENTARY TABLE 6
+
+Candidate approach: differentially methylated CpGs associated with triclosan exposure in the previous work (Jedynak et al. 2021) (FDR-corrected p-value <0.05, n = 202 males) and their counterparts in the current study in females (500 CpGs, n = 185 females). The table is sorted by the nominal p-value for the associations detected in the main analysis unadjusted for placental cell heterogeneity.
+
+```{r}
+EWAS_combined_cellmix_females %>% 
+  
+  mutate_at(vars(Mean_meth, SD_meth), round, 2) %>% 
+  left_join(acme_TCS_females, by = "CpG") %>% 
+  
+  # Select columns in the right order and arrange
+  select(CpG:perc_diff_main_cellmix_female, 
+         acme_CIs,
+         acme_p_value,
+         Estimate_CI:raw_p_value) %>% 
+  mutate(Gene = str_replace(Gene, "Unknown", "")) %>% 
+  arrange(raw_p_value_SEPAGES) %>% 
+  
+  write.csv(here("results", "tables/Suppl_Table_6.csv"), row.names = FALSE)
+```
+
+
+Regression models in the current study were adjusted for maternal active smoking before and/or during pregnancy, maternal age, gestational age at delivery, parity, maternal education level, maternal pre-pregnancy BMI, season of conception as well as the technical parameters batch, plate, and chip. In grey, CpGs with nominal p-value <0.05 in the current study. In bold, CpGs mapping to imprinted genes.
+a University of California, Santa Cruz Genome Browser (https://genome.ucsc.edu).
+b Mediation analysis was performed for CpGs associated with triclosan for which the absolute percentage difference between regression coefficient estimates obtained in models unadjusted and adjusted for placental tissue heterogeneity was ≥20%.
+c Point estimates for ACME with CIs estimated with a quasi-Bayesian approximation.
+d Two-sided p-value for ACME.
+Abbreviations: ACME = average causal mediation effect. Chr = chromosome. CI = confidence interval. FDR = false discovery rate.
+
+
+### SUPPLEMENTARY TABLE 7
+
+Candidate approach: differentially methylated CpGs associated with triclosan exposure in the previous work (Jedynak et al. 2021) (FDR-corrected p-value <0.05, n = 202 males) and their counterparts in the current study in females, where data was stratified by the time point in pregnancy when triclosan exposure was assessed (500 CpGs, n = 185 females).
+
+```{r}
+combined_EDEN_SEPAGES_sex_trim %>% 
+  filter(child_sex == "Female") %>% 
+  write.csv(here("results", "tables/Suppl_Table_7.csv"), row.names = FALSE)
+```
+
+Regression models in the current study were adjusted for maternal active smoking before and/or during pregnancy, maternal age, gestational age at delivery, parity, maternal education level, maternal pre-pregnancy BMI, season of conception, batch, plate, and chip. In grey, CpGs with nominal p-value <0.05 in the current study.
+a University of California, Santa Cruz Genome Browser (https://genome.ucsc.edu).
+Abbreviations: Chr = chromosome. CI = confidence interval. FDR = false discovery rate.
+
+
+### SUPPLEMENTARY TABLE 8
+
+Table made externally.
+Non-exhaustive list of the function of the differentially methylated genes associated with triclosan concentrations.
+
+Information on differentially methylated genes identified as associated with triclosan exposure were retrieved from the GeneCards Human Gene Database (Stelzer et al. 2016).
+
+
+## SUPPLEMENTARY FIGURES
+
+
+### SUPPLEMENTARY FIGURE 1
+
+Figure made externally.
+Study flow chart. 
+
+
+### SUPPLEMENTARY FIGURE 2
+Figure made externally.
+An exemplary scheme for urine sampling, pooling, and averaging of the triclosan concentrations for a participant of the study.
+
+
+### SUPPLEMENTARY FIGURE 3
+
+Figure made externally.
+Impact of data processing and normalization on the overall DNA methylation profile of placental samples (n = 767,668 samples and replicates) using the ChAMP. 
+
+
+### SUPPLEMENTARY FIGURE 4
+
+Boxplot of the distributions of placental cell type estimates obtained for the SEPAGES cohort (n = 395).
+
+```{r}
+c_mix <- expo_cov_tech_conf_cellmix %>% 
+  select(id, Endothelial:Trophoblasts) %>% 
+  pivot_longer(cols = Endothelial:Trophoblasts,
+               names_to = "cell_type", 
+               values_to = "prop")
+
+ggplot(c_mix,
+       aes(x = cell_type,
+           y = prop * 100,
+           fill = cell_type)) +
+  geom_boxplot() +
+  theme_bw() +
+  labs(x = "Cell type",
+       y = "Proportion in the cell mix (%)") +
+  ylim(0, 100) + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  theme(legend.position = "none")
+
+ggsave(filename = here("results", "figures/Suppl_Figure_4.jpeg"),
+       plot = last_plot(),
+       dpi = 250,
+       width = 1800, 
+       height = 1200,
+       units = "px")
+```
+
+
+
+### SUPPLEMENTARY FIGURE 5
+
+Q-Q plots with genomic inflation factor (λ) and Bayesian inflation factor (BIF) for the association between triclosan concentrations and DNA methylation sites in the EWAS (n = 395) for th concept-driven (337,722 CpGs) or agnostic approach (752,577 CpGs).
+
+
+```{r}
+# Draw QQ plot for concept-driven study
+p_val <- data.frame(P_VAL = EWAS_overlapping$raw_p_value)
+
+jpeg(filename = here("results", "figures/Suppl_Figure_5A.jpeg"),
+     res = 250,
+     width = 1800, 
+     height = 1200)
+qqplot_cand <- QQ(dataset = p_val, exposure_name = "Candidate study (337,722 CpGs)")
+# BIF and gif ~ 0.8 
+
+dev.off()
+
+# Draw QQ plot for agnostic study
+p_val <- data.frame(P_VAL = EWAS_agnostic$raw_p_value)
+
+jpeg(filename = here("results", "figures/Suppl_Figure_5B.jpeg"),
+     res = 250,
+     width = 1800, 
+     height = 1200)
+
+QQ(dataset = p_val, exposure_name = "Exploratory study (752,577 CpGs)")
+# BIF and gif ~ 0.8 
+
+dev.off()
+```
+
+
+### SUPPLEMENTARY FIGURE 6
+
+β regression coefficient estimates obtained for the whole population (A) and in analysis in males only (B) in function of the regression coefficient estimates obtained for the 500 CpGs associated with triclosan in the previous study on males (Jedynak et al. 2021). Each data point represents a regression coefficient estimate obtained for SEPAGES triclosan concentrations assessed from the urine pool 1 (circles) or urine pool 2 (triangles); Significant associations (nominal p-value <0.05) are marked with red circles (SEPAGES triclosan concentrations assessed from the urine pool 1) or blue triangles (SEPAGES triclosan concentrations assessed from the urine pool 2). Overlapping significant associations obtained for SEPAGES triclosan concentrations assessed from both the urine pools 1 and 2 are marked with purple. The lines represent best linear fits for the associations obtained for SEPAGES triclosan concentrations assessed from the urine pool 1 (red line, rho = 0.6 and 0.06 for the whole population and males only, respectively) or urine pool 2 (blue line, rho = 0.5 and 0.07 for the whole population and males only, respectively). β estimates correspond to a change in the DNA methylation level for doubling of the urinary triclosan concentration. Regression models in the current study were adjusted for maternal active smoking before and/or during pregnancy, maternal age, gestational age at delivery, parity, maternal education level, maternal pre-pregnancy BMI, season of conception, child’s sex (for analyses not stratified by child’s sex) as well as the technical parameters  batch, plate, and chip.
+Abbreviations: BMI = body mass index.
+
+
+```{r}
+EWAS_overl_males_trim_plot <- EWAS_overlapping_trim %>% 
+  rename_at(vars(Estimate, raw_p_value), function(x) x = paste0(x, "_SEPAGES")) %>% 
+  select(CpG, Gene, Exposure, contains("SEPAGES"))
+
+EWAS_EDEN_SEPAGES_trim_plot <- EWAS_EDEN_SEPAGES %>% 
+  select(CpG, Estimate, raw_p_value) %>% 
+  right_join(EWAS_overl_males_trim_plot, by = "CpG") %>% 
+  pre_proc_data_plot_trim(inters_T2_T3 = inters_T2_T3_males) %>% 
+  mutate(Exposure = ifelse(Exposure == "Urine pool 1", "Urine pool 1 (trimester 2)", "Urine pool 2 (trimester 3)"))
+
+plot_both_trim <- plot_data(data = EWAS_EDEN_SEPAGES_trim_plot,
+                            title = "Males (EDEN) vs. both males and females (SEPAGES)")
+
+EWAS_overl_males_trim_males_plot <- EWAS_overlapping_sex_trim %>% 
+  rename_at(vars(Estimate, raw_p_value), function(x) x = paste0(x, "_SEPAGES")) %>% 
+  select(child_sex, CpG, Gene, Exposure, contains("SEPAGES")) %>% 
+  filter(child_sex == "Male")
+
+EWAS_EDEN_SEPAGES_males_trim_plot <- EWAS_EDEN_SEPAGES_sex %>% 
+  select(child_sex, CpG, Estimate, raw_p_value) %>% 
+  right_join(EWAS_overl_males_trim_males_plot, by = c("CpG", "child_sex")) %>% 
+  pre_proc_data_plot_trim(inters_T2_T3 = inters_T2_T3_males) %>% 
+  mutate(Exposure = ifelse(Exposure == "Urine pool 1", "Urine pool 1 (trimester 2)", "Urine pool 2 (trimester 3)"))
+
+plot_males_trim <- plot_data(data = EWAS_EDEN_SEPAGES_males_trim_plot,
+                             title = "Males (EDEN) vs. males (SEPAGES)")
+
+ggarrange(plot_both_trim, 
+          plot_males_trim,
+          ncol = 1, 
+          nrow = 2,
+          common.legend = TRUE,
+          legend = "right")
+
+ggsave(here("results", "figures/Suppl_Figure_6.jpeg"),
+       dpi = 250,
+       height = 2500,
+       width = 2500,
+       units = "px")
+```
+
+
+
